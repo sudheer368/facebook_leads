@@ -2,6 +2,7 @@ const express = require("express");
 const axios = require("axios");
 const crypto = require("crypto");
 const config = require("./config");
+const { getAppSecretProof } = require("./utils");
 
 const router = express.Router();
 const GRAPH_VERSION = "v19.0";
@@ -9,29 +10,26 @@ const GRAPH_VERSION = "v19.0";
 const APP_ID = process.env.FACEBOOK_APP_ID;
 const APP_SECRET = process.env.APP_SECRET;
 const REDIRECT_URI = process.env.OAUTH_REDIRECT_URI; // e.g. https://your-app.onrender.com/auth/facebook/callback
-
-// Scopes needed to: see the user's pages, read page info, and read+subscribe leads
-const SCOPES = [
-  "pages_show_list",
-  "pages_read_engagement",
-  "pages_manage_metadata",
-  "leads_retrieval",
-].join(",");
+const CONFIG_ID = process.env.FACEBOOK_LOGIN_CONFIG_ID; // from Facebook Login for Business > Configurations
 
 // In-memory holder for user tokens mid-flow (short-lived, just bridges callback -> page-picker click)
 const pendingSessions = new Map();
 
 // ---------- Step 1: "Connect with Facebook" button hits this ----------
 router.get("/auth/facebook", (req, res) => {
-  const state = crypto.randomBytes(12).toString("hex");
-  pendingSessions.set(state, { createdAt: Date.now() });
+  if (!req.session.userId) return res.redirect("/"); // must be logged in to their company account first
 
+  const state = crypto.randomBytes(12).toString("hex");
+  pendingSessions.set(state, { createdAt: Date.now(), ownerId: req.session.userId });
+
+  // Business-type apps use a Login Configuration (config_id) instead of a scope list.
   const authUrl =
     `https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth` +
     `?client_id=${APP_ID}` +
     `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
     `&state=${state}` +
-    `&scope=${encodeURIComponent(SCOPES)}`;
+    `&config_id=${CONFIG_ID}` +
+    `&response_type=code`;
 
   res.redirect(authUrl);
 });
@@ -46,6 +44,7 @@ router.get("/auth/facebook/callback", async (req, res) => {
   if (!pendingSessions.has(state)) {
     return res.status(400).send("Session expired, please click Connect with Facebook again.");
   }
+  const { ownerId } = pendingSessions.get(state);
 
   try {
     // Exchange the code for a short-lived user access token
@@ -70,7 +69,7 @@ router.get("/auth/facebook/callback", async (req, res) => {
     // Fetch every Page this user manages — each comes with its own (already long-lived) access token
     const { data: pagesRes } = await axios.get(
       `https://graph.facebook.com/${GRAPH_VERSION}/me/accounts`,
-      { params: { access_token: longLived.access_token } }
+      { params: { access_token: longLived.access_token, appsecret_proof: getAppSecretProof(longLived.access_token) } }
     );
 
     const pages = pagesRes.data || [];
@@ -82,7 +81,7 @@ router.get("/auth/facebook/callback", async (req, res) => {
 
     if (pages.length === 1) {
       // Only one page — connect it immediately, no picking needed
-      await connectPage(pages[0]);
+      await connectPage(pages[0], ownerId);
       return res.send(successPage(pages[0].name));
     }
 
@@ -90,7 +89,7 @@ router.get("/auth/facebook/callback", async (req, res) => {
     const listHtml = pages
       .map(
         (p) =>
-          `<li><a href="/auth/facebook/select-page?id=${p.id}&token=${encodeURIComponent(p.access_token)}&name=${encodeURIComponent(p.name)}">${p.name}</a></li>`
+          `<li><a href="/auth/facebook/select-page?id=${p.id}&token=${encodeURIComponent(p.access_token)}&name=${encodeURIComponent(p.name)}&owner=${ownerId}">${p.name}</a></li>`
       )
       .join("");
     res.send(`<h2>Pick the Page to connect</h2><ul>${listHtml}</ul>`);
@@ -102,9 +101,10 @@ router.get("/auth/facebook/callback", async (req, res) => {
 
 // ---------- Step 3 (only if multiple pages): user clicks the page they want ----------
 router.get("/auth/facebook/select-page", async (req, res) => {
-  const { id, token, name } = req.query;
+  const { id, token, name, owner } = req.query;
+  if (!req.session.userId || req.session.userId !== owner) return res.redirect("/");
   try {
-    await connectPage({ id, access_token: token, name });
+    await connectPage({ id, access_token: token, name }, owner);
     res.send(successPage(name));
   } catch (err) {
     console.error(err.response?.data || err.message);
@@ -112,20 +112,26 @@ router.get("/auth/facebook/select-page", async (req, res) => {
   }
 });
 
-// Does the two things you previously had to run by hand: save the token, and subscribe to leadgen events
-async function connectPage(page) {
+// Does the things you previously had to run by hand: save the token (tagged to this company),
+// and subscribe to leadgen events
+async function connectPage(page, ownerId) {
   await axios.post(`https://graph.facebook.com/${GRAPH_VERSION}/${page.id}/subscribed_apps`, null, {
-    params: { subscribed_fields: "leadgen", access_token: page.access_token },
+    params: {
+      subscribed_fields: "leadgen",
+      access_token: page.access_token,
+      appsecret_proof: getAppSecretProof(page.access_token),
+    },
   });
 
   config.saveConnectedPage({
     id: page.id,
     name: page.name,
     access_token: page.access_token,
+    ownerId,
     connectedAt: Date.now(),
   });
 
-  console.log(`Connected Page "${page.name}" (${page.id}) and subscribed to lead events.`);
+  console.log(`Connected Page "${page.name}" (${page.id}) to company ${ownerId} and subscribed to lead events.`);
 }
 
 function successPage(pageName) {
