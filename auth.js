@@ -24,6 +24,13 @@ router.get("/auth/facebook", (req, res) => {
   res.redirect(authUrl);
 });
 
+// Duplicate callback protection: Render's free tier can be slow to wake up,
+// which sometimes causes the browser/network to retry the callback request.
+// Facebook's authorization code is one-time-use, so retrying it errors out
+// with "This authorization code has been used." We cache the result per code
+// so a duplicate hit just replays the same outcome instead of re-exchanging.
+const codeResultCache = new Map();
+
 // ---------- Step 2: Facebook redirects back here automatically with a code ----------
 router.get("/auth/facebook/callback", async (req, res) => {
   const { code, error, error_description } = req.query;
@@ -35,6 +42,18 @@ router.get("/auth/facebook/callback", async (req, res) => {
     return res.status(400).send("No code received from Facebook. Please click Connect with Facebook again.");
   }
 
+  if (codeResultCache.has(code)) {
+    const cached = await codeResultCache.get(code);
+    return res.status(cached.status).send(cached.body);
+  }
+
+  const resultPromise = exchangeCodeForPages(code);
+  codeResultCache.set(code, resultPromise);
+  const result = await resultPromise;
+  res.status(result.status).send(result.body);
+});
+
+async function exchangeCodeForPages(code) {
   try {
     const { data: tokenRes } = await axios.get(
       `https://graph.facebook.com/${GRAPH_VERSION}/oauth/access_token`,
@@ -61,12 +80,12 @@ router.get("/auth/facebook/callback", async (req, res) => {
     const pages = pagesRes.data || [];
 
     if (pages.length === 0) {
-      return res.send("No Facebook Pages found for this account. Make sure you're an admin of the Page you want to connect.");
+      return { status: 200, body: "No Facebook Pages found for this account. Make sure you're an admin of the Page you want to connect." };
     }
 
     if (pages.length === 1) {
       await connectPage(pages[0]);
-      return res.send(successPage(pages[0].name));
+      return { status: 200, body: successPage(pages[0].name) };
     }
 
     const listHtml = pages
@@ -75,12 +94,12 @@ router.get("/auth/facebook/callback", async (req, res) => {
           `<li><a href="/auth/facebook/select-page?id=${p.id}&token=${encodeURIComponent(p.access_token)}&name=${encodeURIComponent(p.name)}">${p.name}</a></li>`
       )
       .join("");
-    res.send(`<h2>Pick the Page to connect</h2><ul>${listHtml}</ul>`);
+    return { status: 200, body: `<h2>Pick the Page to connect</h2><ul>${listHtml}</ul>` };
   } catch (err) {
     console.error(err.response?.data || err.message);
-    res.status(500).send("Something went wrong connecting to Facebook. Check server logs.");
+    return { status: 500, body: "Something went wrong connecting to Facebook. Check server logs." };
   }
-});
+}
 
 // ---------- Step 3 (only if multiple pages): user clicks the page they want ----------
 router.get("/auth/facebook/select-page", async (req, res) => {
