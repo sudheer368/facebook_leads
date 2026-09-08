@@ -28,7 +28,6 @@ function getConnectedPages() {
   return readConfig().pages;
 }
 
-// Look up a page's access token by page_id — used when a webhook event comes in
 function getPageToken(pageId) {
   const page = readConfig().pages.find((p) => p.id === pageId);
   return page ? page.access_token : null;

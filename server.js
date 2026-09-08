@@ -26,7 +26,35 @@ app.get("/", (req, res) => {
     <div style="font-family: sans-serif; max-width: 480px; margin: 60px auto; text-align: center;">
       <h2>Meta Leads Server</h2>
       ${connectedList}
-      <a href="/auth/facebook" style="display:inline-block; background:#1877F2; color:#fff; padding:12px 22px; border-radius:8px; text-decoration:none; font-weight:600;">Connect with Facebook</a>
+      <a href="/auth/facebook" style="display:inline-block; background:#1877F2; color:#fff; padding:12px 22px; border-radius:8px; text-decoration:none; font-weight:600; margin-bottom:20px;">Connect with Facebook</a>
+      <p><a href="/leads">View leads</a></p>
+    </div>`);
+});
+
+// ---------- Plain page listing every lead received so far ----------
+app.get("/leads", (req, res) => {
+  const leads = store.getLeads();
+  const rows = leads
+    .map(
+      (l) => `
+      <tr>
+        <td>${l.name}</td>
+        <td>${l.phone}</td>
+        <td>${l.email || ""}</td>
+        <td>${l.campaign}</td>
+        <td>${l.stage}</td>
+        <td>${new Date(l.receivedAt).toLocaleString()}</td>
+      </tr>`
+    )
+    .join("");
+  res.send(`
+    <div style="font-family: sans-serif; max-width: 900px; margin: 40px auto;">
+      <p><a href="/">&larr; Back</a></p>
+      <h2>Leads (${leads.length})</h2>
+      <table border="1" cellpadding="8" cellspacing="0" style="border-collapse: collapse; width: 100%;">
+        <tr style="background:#f0f0f0;"><th>Name</th><th>Phone</th><th>Email</th><th>Campaign</th><th>Stage</th><th>Received</th></tr>
+        ${rows || "<tr><td colspan='6' style='text-align:center;color:#888;'>No leads yet.</td></tr>"}
+      </table>
     </div>`);
 });
 
@@ -44,10 +72,8 @@ app.get("/webhook", (req, res) => {
 });
 
 // ---------- 2. Actual lead events (Meta POSTs here every time someone submits your lead form) ----------
-// We need the raw body to verify Meta's signature, so this route uses express.raw() instead of express.json().
 app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
-  // Always respond 200 fast — Meta retries aggressively if you don't
-  res.sendStatus(200);
+  res.sendStatus(200); // respond fast, Meta retries aggressively otherwise
 
   const signature = req.headers["x-hub-signature-256"];
   if (!isValidSignature(req.body, signature)) {
@@ -91,16 +117,16 @@ function isValidSignature(rawBody, signatureHeader) {
 }
 
 async function handleNewLead({ leadgen_id, form_id, page_id, ad_id, created_time }) {
+  const { getAppSecretProof } = require("./utils");
   const pageAccessToken = config.getPageToken(page_id);
   if (!pageAccessToken) {
     console.warn(`Got a lead for Page ${page_id}, but that Page isn't connected. Visit / and click Connect with Facebook.`);
     return;
   }
 
-  // Fetch the actual submitted fields (name, phone, email, etc.)
   const { data: lead } = await axios.get(
     `https://graph.facebook.com/${GRAPH_VERSION}/${leadgen_id}`,
-    { params: { access_token: pageAccessToken } }
+    { params: { access_token: pageAccessToken, appsecret_proof: getAppSecretProof(pageAccessToken) } }
   );
 
   const fields = {};
@@ -108,16 +134,15 @@ async function handleNewLead({ leadgen_id, form_id, page_id, ad_id, created_time
     fields[f.name] = f.values && f.values[0];
   });
 
-  // Best-effort: pull the form's name to use as the "campaign" label
   let formName = "Facebook Lead Form";
   try {
     const { data: form } = await axios.get(
       `https://graph.facebook.com/${GRAPH_VERSION}/${form_id}`,
-      { params: { access_token: pageAccessToken, fields: "name" } }
+      { params: { access_token: pageAccessToken, appsecret_proof: getAppSecretProof(pageAccessToken), fields: "name" } }
     );
     formName = form.name || formName;
   } catch {
-    // form name fetch is optional, ignore failures
+    // optional, ignore failures
   }
 
   const record = {
@@ -125,7 +150,7 @@ async function handleNewLead({ leadgen_id, form_id, page_id, ad_id, created_time
     name: fields.full_name || [fields.first_name, fields.last_name].filter(Boolean).join(" ") || "Unknown",
     phone: fields.phone_number || "",
     email: fields.email || "",
-    source: "facebook", // Meta's leadgen payload doesn't distinguish FB vs IG placement without extra ad-level lookups
+    source: "facebook",
     campaign: formName,
     budget: fields.budget || "Not specified",
     message: fields.message || "",
@@ -140,7 +165,7 @@ async function handleNewLead({ leadgen_id, form_id, page_id, ad_id, created_time
   console.log("New lead saved:", record.name, record.phone);
 }
 
-// ---------- 3. API for your dashboard to read leads from ----------
+// ---------- 3. API for a dashboard to read leads from, if you want one later ----------
 app.get("/api/leads", (req, res) => {
   res.json(store.getLeads());
 });
