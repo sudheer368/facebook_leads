@@ -1,6 +1,5 @@
 const express = require("express");
 const axios = require("axios");
-const crypto = require("crypto");
 const config = require("./config");
 const { getAppSecretProof } = require("./utils");
 
@@ -9,36 +8,32 @@ const GRAPH_VERSION = "v19.0";
 
 const APP_ID = process.env.FACEBOOK_APP_ID;
 const APP_SECRET = process.env.APP_SECRET;
-const REDIRECT_URI = process.env.OAUTH_REDIRECT_URI;
-const CONFIG_ID = process.env.FACEBOOK_LOGIN_CONFIG_ID;
+const REDIRECT_URI = process.env.OAUTH_REDIRECT_URI; // e.g. https://your-app.onrender.com/auth/facebook/callback
+const CONFIG_ID = process.env.FACEBOOK_LOGIN_CONFIG_ID; // from Facebook Login for Business > Configurations
 
-const pendingStates = new Set();
-
+// ---------- Step 1: "Connect with Facebook" button hits this ----------
 router.get("/auth/facebook", (req, res) => {
-  const state = crypto.randomBytes(12).toString("hex");
-  pendingStates.add(state);
-
+  // Business-type apps use a Login Configuration (config_id) instead of a scope list.
   const authUrl =
     `https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth` +
     `?client_id=${APP_ID}` +
     `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
-    `&state=${state}` +
     `&config_id=${CONFIG_ID}` +
     `&response_type=code`;
 
   res.redirect(authUrl);
 });
 
+// ---------- Step 2: Facebook redirects back here automatically with a code ----------
 router.get("/auth/facebook/callback", async (req, res) => {
-  const { code, state, error, error_description } = req.query;
+  const { code, error, error_description } = req.query;
 
   if (error) {
     return res.status(400).send(`Facebook declined: ${error_description || error}`);
   }
-  if (!pendingStates.has(state)) {
-    return res.status(400).send("Session expired, please click Connect with Facebook again.");
+  if (!code) {
+    return res.status(400).send("No code received from Facebook. Please click Connect with Facebook again.");
   }
-  pendingStates.delete(state);
 
   try {
     const { data: tokenRes } = await axios.get(
@@ -87,6 +82,7 @@ router.get("/auth/facebook/callback", async (req, res) => {
   }
 });
 
+// ---------- Step 3 (only if multiple pages): user clicks the page they want ----------
 router.get("/auth/facebook/select-page", async (req, res) => {
   const { id, token, name } = req.query;
   try {
