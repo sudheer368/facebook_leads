@@ -9,18 +9,15 @@ const GRAPH_VERSION = "v19.0";
 
 const APP_ID = process.env.FACEBOOK_APP_ID;
 const APP_SECRET = process.env.APP_SECRET;
-const REDIRECT_URI = process.env.OAUTH_REDIRECT_URI; // e.g. https://your-app.onrender.com/auth/facebook/callback
-const CONFIG_ID = process.env.FACEBOOK_LOGIN_CONFIG_ID; // from Facebook Login for Business > Configurations
+const REDIRECT_URI = process.env.OAUTH_REDIRECT_URI;
+const CONFIG_ID = process.env.FACEBOOK_LOGIN_CONFIG_ID;
 
-// Bridges the callback back to the click that started it (just a CSRF-style check, no login needed)
 const pendingStates = new Set();
 
-// ---------- Step 1: "Connect with Facebook" button hits this ----------
 router.get("/auth/facebook", (req, res) => {
   const state = crypto.randomBytes(12).toString("hex");
   pendingStates.add(state);
 
-  // Business-type apps use a Login Configuration (config_id) instead of a scope list.
   const authUrl =
     `https://www.facebook.com/${GRAPH_VERSION}/dialog/oauth` +
     `?client_id=${APP_ID}` +
@@ -32,7 +29,6 @@ router.get("/auth/facebook", (req, res) => {
   res.redirect(authUrl);
 });
 
-// ---------- Step 2: Facebook redirects back here automatically with a code ----------
 router.get("/auth/facebook/callback", async (req, res) => {
   const { code, state, error, error_description } = req.query;
 
@@ -91,7 +87,6 @@ router.get("/auth/facebook/callback", async (req, res) => {
   }
 });
 
-// ---------- Step 3 (only if multiple pages): user clicks the page they want ----------
 router.get("/auth/facebook/select-page", async (req, res) => {
   const { id, token, name } = req.query;
   try {

@@ -18,7 +18,7 @@ function writeAll(leads) {
 
 function addLead(lead) {
   const leads = readAll();
-  if (leads.some((l) => l.id === lead.id)) return; // avoid duplicates on webhook retries
+  if (leads.some((l) => l.id === lead.id)) return;
   leads.unshift(lead);
   writeAll(leads);
 }

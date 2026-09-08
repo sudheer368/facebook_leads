@@ -6,6 +6,7 @@ const cors = require("cors");
 const store = require("./store");
 const config = require("./config");
 const authRouter = require("./auth");
+const { getAppSecretProof } = require("./utils");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -16,7 +17,6 @@ const GRAPH_VERSION = "v19.0";
 app.use(cors());
 app.use(authRouter);
 
-// ---------- 0. Landing page with the one-click connect button ----------
 app.get("/", (req, res) => {
   const pages = config.getConnectedPages();
   const connectedList = pages.length
@@ -31,7 +31,6 @@ app.get("/", (req, res) => {
     </div>`);
 });
 
-// ---------- Plain page listing every lead received so far ----------
 app.get("/leads", (req, res) => {
   const leads = store.getLeads();
   const rows = leads
@@ -58,7 +57,6 @@ app.get("/leads", (req, res) => {
     </div>`);
 });
 
-// ---------- 1. Webhook verification (Meta calls this once, when you save the webhook URL) ----------
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -71,9 +69,8 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// ---------- 2. Actual lead events (Meta POSTs here every time someone submits your lead form) ----------
 app.post("/webhook", express.raw({ type: "application/json" }), async (req, res) => {
-  res.sendStatus(200); // respond fast, Meta retries aggressively otherwise
+  res.sendStatus(200);
 
   const signature = req.headers["x-hub-signature-256"];
   if (!isValidSignature(req.body, signature)) {
@@ -117,7 +114,6 @@ function isValidSignature(rawBody, signatureHeader) {
 }
 
 async function handleNewLead({ leadgen_id, form_id, page_id, ad_id, created_time }) {
-  const { getAppSecretProof } = require("./utils");
   const pageAccessToken = config.getPageToken(page_id);
   if (!pageAccessToken) {
     console.warn(`Got a lead for Page ${page_id}, but that Page isn't connected. Visit / and click Connect with Facebook.`);
@@ -142,7 +138,7 @@ async function handleNewLead({ leadgen_id, form_id, page_id, ad_id, created_time
     );
     formName = form.name || formName;
   } catch {
-    // optional, ignore failures
+    // optional
   }
 
   const record = {
@@ -165,7 +161,6 @@ async function handleNewLead({ leadgen_id, form_id, page_id, ad_id, created_time
   console.log("New lead saved:", record.name, record.phone);
 }
 
-// ---------- 3. API for a dashboard to read leads from, if you want one later ----------
 app.get("/api/leads", (req, res) => {
   res.json(store.getLeads());
 });
